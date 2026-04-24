@@ -1,0 +1,66 @@
+# =========================
+# 🚀 INFERENCE + JSON SUBMISSION
+# =========================
+
+import json
+import torch
+import numpy as np
+
+model.eval()
+
+results = []
+
+# we assume df_test = df_unlabeled OR provided test set
+# IMPORTANT: change this if your competition uses a different test dataframe
+df_test = df_unlabeled.copy()
+
+df_test['full_text'] = df_test['review_text'].fillna("").apply(arabic_preprocess)
+df_test['full_text'] = df_test['full_text'].apply(arabert_prep.preprocess)
+
+with torch.no_grad():
+    for i, row in df_test.iterrows():
+
+        text = row['full_text']
+        review_id = row.get('review_id', i)
+
+        enc = tokenizer(
+            text,
+            return_tensors='pt',
+            truncation=True,
+            padding='max_length',
+            max_length=96
+        )
+
+        input_ids = enc['input_ids'].to(device)
+        attention_mask = enc['attention_mask'].to(device)
+
+        aspect_logits, sentiment_logits = model(input_ids, attention_mask)
+
+        aspect_probs = torch.sigmoid(aspect_logits).cpu().numpy()[0]
+        aspect_preds = (aspect_probs > 0.35)
+
+        sentiment_preds = torch.argmax(sentiment_logits, dim=-1).cpu().numpy()[0]  # 0,1,2
+
+        aspects = []
+        aspect_sentiments = {}
+
+        for j, aspect in enumerate(all_aspects):
+            if aspect_preds[j] == 1:
+                aspects.append(aspect)
+
+                sentiment_map = {0: "negative", 1: "neutral", 2: "positive"}
+                aspect_sentiments[aspect] = sentiment_map[int(sentiment_preds[j])]
+
+        results.append({
+            "review_id": int(review_id),
+            "aspects": aspects,
+            "aspect_sentiments": aspect_sentiments
+        })
+
+# =========================
+# SAVE JSON
+# =========================
+with open("submission.json", "w", encoding="utf-8") as f:
+    json.dump(results, f, ensure_ascii=False, indent=2)
+
+print("✅ submission.json created successfully")
