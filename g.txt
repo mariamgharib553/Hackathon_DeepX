@@ -1,0 +1,5 @@
+def identify_outliers(column_values):
+  plt.figure(figsize=(8, 4))
+  sns.boxplot(x=column_values, color='lightgreen')
+  plt.title('Box Plot to Identify Outliers and Symmetry')
+  plt.show()
