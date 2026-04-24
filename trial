@@ -1,0 +1,196 @@
+import pandas as pd
+import numpy as np
+import torch
+from transformers import AutoTokenizer, AutoModelForTokenClassification, TrainingArguments, Trainer
+from datasets import Dataset
+from sklearn.metrics import accuracy_score, f1_score
+
+# -------------------------------
+# 1. Configuration
+# -------------------------------
+MODEL_NAME = "aubmindlab/bert-base-arabertv02"
+MAX_LEN = 128           # adjust based on your review length distribution
+BATCH_SIZE = 16
+EPOCHS = 3
+LEARNING_RATE = 2e-5
+OUTPUT_DIR = "./arabert_absa"
+
+# ----- Domain mapping (Arabic -> English)
+domain_map = {
+    "مطعم": "restaurant", "مطعم يمني": "restaurant", "مطعم بيتزا": "restaurant",
+    "كافيه": "cafe", "مقهى": "cafe",
+    "صيدلية": "medical", "مستشفى": "medical", "عِيادة أسنان": "medical",
+    "متجر ملابس": "clothing", "ecommerce": "ecommerce",
+    # ... add all your categories from earlier
+}
+# fallback for unknown
+def get_domain(cat):
+    return domain_map.get(cat.strip().lower(), "other")
+
+# -------------------------------
+# 2. Load and prepare data
+# -------------------------------
+train_df = pd.read_csv("train.csv")
+test_df = pd.read_csv("test.csv")
+
+# Prepend domain to review text
+train_df["text_input"] = train_df.apply(
+    lambda row: f"[domain: {get_domain(row['business_category_clean'])}] {row['review_text']}", axis=1
+)
+test_df["text_input"] = test_df.apply(
+    lambda row: f"[domain: {get_domain(row['business_category_clean'])}] {row['review_text']}", axis=1
+)
+
+# ----- Label mapping: from string BIO tags to IDs
+# Assuming your train_df has a column "token_labels" with space-separated tags e.g. "B-food-pos I-food-pos O B-service-neg"
+# We'll collect all unique tags from training set
+all_tags = set()
+for labels in train_df["token_labels"]:
+    all_tags.update(labels.split())
+tag2id = {tag: i for i, tag in enumerate(sorted(all_tags))}
+id2tag = {i: tag for tag, i in tag2id.items()}
+num_labels = len(tag2id)
+
+# Convert token labels to list of integers per sample
+def labels_to_ids(label_str):
+    return [tag2id[t] for t in label_str.split()]
+
+train_df["label_ids"] = train_df["token_labels"].apply(labels_to_ids)
+test_labels_exist = "token_labels" in test_df.columns  # for evaluation, if available
+
+# -------------------------------
+# 3. Tokenize and align labels (word -> subword)
+# -------------------------------
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+def tokenize_and_align(examples):
+    # examples: dict with keys "text_input", "label_ids" (list of ints)
+    tokenized = tokenizer(
+        examples["text_input"],
+        truncation=True,
+        padding="max_length",
+        max_length=MAX_LEN,
+        return_tensors="pt",
+        return_overflowing_tokens=False,
+        return_special_tokens_mask=True,
+    )
+    # Align labels: for each token, assign label of the first wordpiece of a word
+    # We'll use the word_ids method
+    labels = []
+    for i, label_list in enumerate(examples["label_ids"]):
+        word_ids = tokenized.word_ids(batch_index=i)  # map token index to word index
+        previous_word_idx = None
+        aligned_labels = []
+        for word_idx in word_ids:
+            if word_idx is None:
+                aligned_labels.append(-100)  # ignore special tokens
+            elif word_idx != previous_word_idx:
+                # first token of a word -> assign its label
+                aligned_labels.append(label_list[word_idx])
+            else:
+                # subsequent subword tokens -> ignore (we can set to -100 or repeat)
+                # For token classification, we usually set -100
+                aligned_labels.append(-100)
+            previous_word_idx = word_idx
+        # Pad or truncate to MAX_LEN
+        if len(aligned_labels) < MAX_LEN:
+            aligned_labels += [-100] * (MAX_LEN - len(aligned_labels))
+        else:
+            aligned_labels = aligned_labels[:MAX_LEN]
+        labels.append(aligned_labels)
+    tokenized["labels"] = torch.tensor(labels)
+    return tokenized
+
+# Convert DataFrames to HuggingFace Dataset
+train_dataset = Dataset.from_pandas(train_df[["text_input", "label_ids"]])
+test_dataset = Dataset.from_pandas(test_df[["text_input"]] + (["label_ids"] if test_labels_exist else []))
+
+# Apply tokenization (batched)
+train_dataset = train_dataset.map(
+    tokenize_and_align,
+    batched=True,
+    batch_size=32,
+    remove_columns=["text_input", "label_ids"]
+)
+if test_labels_exist:
+    test_dataset = test_dataset.map(
+        tokenize_and_align,
+        batched=True,
+        batch_size=32,
+        remove_columns=["text_input", "label_ids"]
+    )
+else:
+    # For test without labels: only tokenize, no labels
+    test_dataset = test_dataset.map(
+        lambda x: tokenizer(x["text_input"], truncation=True, padding="max_length", max_length=MAX_LEN),
+        batched=True,
+        remove_columns=["text_input"]
+    )
+
+# -------------------------------
+# 4. Load model
+# -------------------------------
+model = AutoModelForTokenClassification.from_pretrained(MODEL_NAME, num_labels=num_labels)
+
+# -------------------------------
+# 5. Training arguments and trainer
+# -------------------------------
+training_args = TrainingArguments(
+    output_dir=OUTPUT_DIR,
+    evaluation_strategy="epoch" if test_labels_exist else "no",
+    save_strategy="epoch",
+    learning_rate=LEARNING_RATE,
+    per_device_train_batch_size=BATCH_SIZE,
+    per_device_eval_batch_size=BATCH_SIZE,
+    num_train_epochs=EPOCHS,
+    weight_decay=0.01,
+    logging_dir="./logs",
+    logging_steps=50,
+    load_best_model_at_end=True if test_labels_exist else False,
+    metric_for_best_model="eval_f1" if test_labels_exist else None,
+)
+
+def compute_metrics(p):
+    predictions, labels = p
+    predictions = np.argmax(predictions, axis=2)
+    # Remove ignored index (-100)
+    true_labels = labels[labels != -100]
+    pred_labels = predictions[labels != -100]
+    acc = accuracy_score(true_labels, pred_labels)
+    f1 = f1_score(true_labels, pred_labels, average="weighted")
+    return {"accuracy": acc, "f1": f1}
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=test_dataset if test_labels_exist else None,
+    tokenizer=tokenizer,
+    compute_metrics=compute_metrics if test_labels_exist else None,
+)
+
+# -------------------------------
+# 6. Train
+# -------------------------------
+trainer.train()
+
+# -------------------------------
+# 7. Save model
+# -------------------------------
+model.save_pretrained(f"{OUTPUT_DIR}/final_model")
+tokenizer.save_pretrained(f"{OUTPUT_DIR}/final_model")
+
+# -------------------------------
+# 8. Predict on test set (without ground truth)
+# -------------------------------
+if not test_labels_exist:
+    predictions = trainer.predict(test_dataset)
+    pred_logits = predictions.predictions
+    pred_ids = np.argmax(pred_logits, axis=2)
+    # Convert back to BIO tags
+    test_df["predicted_labels"] = [
+        [id2tag[id] for id in seq if id != -100] for seq in pred_ids
+    ]
+    # Save to CSV
+    test_df[["review_text", "business_category_clean", "predicted_labels"]].to_csv("test_predictions.csv", index=False)
+    print("Predictions saved to test_predictions.csv")
