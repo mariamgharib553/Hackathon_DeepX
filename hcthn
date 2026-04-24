@@ -1,0 +1,107 @@
+df_train['business_category'] = df_train['business_category'].astype(str)
+
+df_train['business_category'] = df_train['business_category'].apply(
+    lambda x: x.strip().lower()
+)
+df_train['business_category'] = df_train['business_category'].str.replace(r'\s+', ' ', regex=True)
+print(df_train['business_category'].unique())
+
+category_mapping = {
+    # Restaurants (all مطعم variations)
+    "مطعم": "restaurant",
+    "مطعم مأكولات ومشروبات": "restaurant",
+    "مطعم يمني": "restaurant",
+    "مطعم أطباق اللحوم": "restaurant",
+    "مطعم مأكولات الشرق الأوسط": "restaurant",
+    "مطعم بيتزا": "restaurant",
+    "مطعم فلافل": "restaurant",
+    "مطعم مأكولات مشوية": "restaurant",
+    "مطعم مأكولات لبنانية": "restaurant",
+    "مطعم مأكولات سورية": "restaurant",
+    "مطعم مأكولات تركية": "restaurant",
+    "مطعم دجاج": "restaurant",
+    "مطعم مأكولات إيطالية": "restaurant",
+    "مطعم مأكولات أمريكية": "restaurant",
+    "مطعم شاورما": "restaurant",
+    "مطعم مأكولات هندية": "restaurant",
+    "مطعم وجبات سريعة": "restaurant",
+    "مطعم للإفطار": "restaurant",
+    "مطعم ببوفيه": "restaurant",
+    "مطعم مأكولات مصرية": "restaurant",
+    "مطعم عائلي": "restaurant",
+    "مطعم مأكولات فرنسية": "restaurant",
+    "مطعم مأكولات بحرية": "restaurant",
+    "مطعم كريب": "restaurant",
+    "مطعم مأكولات من جنوب إفريقيا": "restaurant",
+
+    # Cafes
+    "كافيه": "cafe",
+    "مقهى": "cafe",
+
+    # Medical (hospitals, clinics, pharmacies, dentists)
+    "عِيادة أسنان": "medical",
+    "صيدلية": "medical",
+    "مركز طبي": "medical",
+    "مستشفى متخصص": "medical",
+    "طبيب أسنان": "medical",
+    "مستشفى": "medical",
+    "عيادة طبية": "medical",
+    "مستشفى جامعي": "medical",
+    "المستشفى العسكري": "medical",
+    "عيادة الخصوبة": "medical",
+    "عيادة متخصصة": "medical",
+    "مستشفى عام": "medical",
+    "المستشفى الحكومي": "medical",
+    "مستشفى خاصة": "medical",
+    "عيادة جراحة التجميل": "medical",
+
+    # Gyms and fitness rooms
+    "صالة رياضة": "gym",
+    "غرفة لياقة": "gym",
+    "برنامج اللياقة البدنية": "fitness_program",  # or keep as "gym"
+
+    # Beauty salons (including nail salon)
+    "صالون تجميل": "salon",
+    "صالون عناية بالأظافر": "salon",
+
+    # Barbers / hairdressers
+    "مصفف الشعر": "barber",
+    "صالون حلاقة": "barber",
+
+    # Hotel
+    "فندق": "hotel",
+
+    # Retail (general stores, markets, malls, outlets)
+    "متجر": "retail",
+    "منفذ بيع بالتجزئة": "retail",
+    "سوق": "retail",
+    "مركز تسوق": "retail",   # mall
+    "متجر بقالة": "supermarket",
+    "سوبرماركت": "supermarket",
+    "متجر بقالة راقٍ": "supermarket",
+
+    # Clothing stores
+    "متجر ملابس حريمي": "clothing_store",
+    "متجر ملابس": "clothing_store",
+    "متجر ملابس رجالي": "clothing_store",
+    "متجر ملابس رياضية": "clothing_store",
+
+    # Other categories
+    "ecommerce": "ecommerce",
+    "travel": "travel",
+    "transport": "transport",
+    "food_delivery": "food_delivery",
+    "real_estate": "real_estate",
+    "entertainment": "entertainment",
+}
+
+
+df_train['business_domain'] = df_train['business_category'].map(category_mapping)
+print(df_train['business_domain'].value_counts())
+df_train = df_train.drop('business_category', axis = 1)
+
+
+df_train['text_with_domain'] = "[domain: " + df_train['business_domain'] + "] " + df_train['review_text']
+
+df_train = df_train.drop('business_domain', axis = 1)
+df_train = df_train.drop('review_text', axis = 1)
